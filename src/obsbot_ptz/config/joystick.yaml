@@ -1,0 +1,43 @@
+# Defaults for a Logitech Extreme 3D Pro (USB 046d:c215).
+#
+# Axes are 0-based, the way `ros2 topic echo /joy` prints them:
+#   0 stick X (left/right)   1 stick Y (fwd/back)   2 twist
+#   3 throttle slider        4 hat X                5 hat Y
+#
+# Buttons are numbered the way they are printed on the joystick, starting at 1
+# (1 = trigger, 2 = side thumb button, 3-6 = top cluster). Set a binding to 0
+# to disable it. Only the three bindings below do anything; every other button
+# on the stick is deliberately inert.
+
+/obsbot/joy_node:
+  ros__parameters:
+    device_id: 0
+    deadzone: 0.02          # raw driver deadzone; real shaping happens below
+    # Keep messages flowing while the stick is held still. joy_to_ptz also
+    # republishes on a timer, so this is belt-and-braces.
+    autorepeat_rate: 20.0
+    coalesce_interval_ms: 10
+
+/obsbot/joy_to_ptz:
+  ros__parameters:
+    publish_rate: 50.0
+    joy_timeout: 1.0        # zero the command if the stick stops reporting
+
+    pan_axis: 0
+    tilt_axis: 1
+    # joy_node already reports stick-left and stick-up as POSITIVE (REP-103),
+    # which is the sign cmd_ptz wants for pan-left and tilt-up, so no
+    # inversion. Flip one only if you prefer the opposite feel on that axis.
+    invert_pan: false       # stick left -> camera pans left
+    invert_tilt: false      # stick forward -> camera tilts up
+
+    zoom_in_button: 1       # trigger
+    home_button: 2
+    zoom_out_button: 3
+
+    deadzone: 0.10
+    # Mild on purpose. A steep curve parks most of the stick travel in the
+    # low-rate range, and this gimbal cannot pan smoothly there -- see
+    # min_pan_rate in ptz.yaml.
+    expo: 0.35
+    scale: 1.0

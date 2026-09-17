@@ -1,0 +1,41 @@
+/obsbot/obsbot_gcs:
+  ros__parameters:
+    # Video source. Leave both empty to auto-detect the OBSBOT and capture
+    # directly (lowest latency, no image traffic on the network).
+    # Set image_topic instead when the GCS runs on a different machine than
+    # the camera -- e.g. "/obsbot/image_raw".
+    video_device: ""
+    image_topic: ""
+    video_width: 1920
+    video_height: 1080
+    video_fps: 30
+
+    # Presentation.
+    #   show_overlay - draw telemetry and travel ladders over the picture
+    #   show_panels  - side panels and the button bar
+    #   fullscreen   - open fullscreen instead of maximised (F11 toggles)
+    # view.launch.py overrides all three for a clean, audience-facing screen.
+    show_overlay: false
+    show_panels: true
+    fullscreen: false
+
+    # Used to convert a click into a pan/tilt delta. hfov_deg is the horizontal
+    # field of view at full wide; if clicks consistently overshoot, lower it.
+    hfov_deg: 78.0
+    zoom_max_factor: 4.0
+
+    # Should match the driver's soft limits so the map and ladders read true.
+    pan_limit: 130.0
+    tilt_limit: 90.0
+    jog_step_deg: 3.0
+    zoom_wheel_step: 0.05   # zoom change per mouse-wheel notch over the video
+
+    # Mirrors of the joy_to_ptz mapping, for the joystick monitor only, so the
+    # panel can label which buttons are live. Changing these does NOT change
+    # how the camera is driven -- edit joystick.yaml for that. Buttons use the
+    # numbers printed on the stick (1 = trigger).
+    pan_axis: 0
+    tilt_axis: 1
+    zoom_in_button: 1
+    home_button: 2
+    zoom_out_button: 3

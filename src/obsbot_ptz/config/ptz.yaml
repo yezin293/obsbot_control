@@ -1,0 +1,80 @@
+/obsbot/obsbot_ptz:
+  ros__parameters:
+    # Leave empty to auto-detect the first OBSBOT with pan/tilt controls.
+    device: ""
+    control_rate: 50.0
+    publish_rate: 20.0
+    frame_id: "obsbot_camera"
+
+    # Speed at full stick deflection. Tune these first.
+    #
+    # Keep them BELOW the gimbal's real slew rate, measured at ~55 deg/s on the
+    # Tiny 2 Lite (time a 90 deg move and watch when the image stops). The
+    # driver integrates rate into a target angle open-loop, so commanding more
+    # than the gimbal can deliver lets the target run away from the camera --
+    # and every time you release the stick it keeps coasting to catch up.
+    # Commanding more than tracking_rate is worse than useless: measured over a
+    # 5 s full-deflection pan, asking for 45 deg/s moved the camera a THIRD as
+    # far as asking for 18, because the target ran away and the gimbal spent
+    # the pan thrashing between setpoints it could never reach.
+    max_pan_rate: 20.0     # deg/s
+    max_tilt_rate: 18.0    # deg/s
+    # Zoom fraction per second. The full 0..1 range is 1x to 4x magnification
+    # (measured: 25 -> 1.75x, 50 -> 2.50x, 75 -> 3.25x, 100 -> 4.03x), so 0.4
+    # crossed the entire range in 2.5 s -- a tap overshot badly. At 0.15 a
+    # press is something you can aim.
+    max_zoom_rate: 0.15
+
+    # Speed at the smallest usable deflection. Setpoints quantise to 1 degree
+    # and the gimbal only slews at ~52 deg/s, so anything much slower than
+    # this is executed as a series of visible 1-degree hops rather than a pan.
+    # Lower it if you want finer framing and can live with the stepping.
+    min_pan_rate: 12.0     # deg/s
+    min_tilt_rate: 10.0    # deg/s
+
+    # Acceleration limit. High, so the camera starts and stops with the stick
+    # instead of easing in and drifting on afterwards. 0.0 removes the ramp
+    # entirely, which is jerkier but not faster.
+    pan_accel: 600.0       # deg/s^2
+    tilt_accel: 500.0      # deg/s^2
+
+    # The camera reports no true position, so the driver estimates it: the
+    # estimate chases the target at tracking_rate, and the target is never
+    # allowed to get further than lead_limit ahead of it.
+    #
+    # This is what stops the camera drifting on after you release the stick.
+    # Commanding faster than the gimbal can stream-follow used to build a debt
+    # that it paid off afterwards; now the excess is simply never commanded.
+    # Overrun after release is bounded by lead_limit / tracking_rate, so the
+    # 2 deg / 25 deg-per-second default settles in under a tenth of a second.
+    #
+    # tracking_rate is NOT the 52 deg/s a single long move reaches -- fed a
+    # stream of one-degree setpoints the gimbal accelerates and decelerates for
+    # each one. Raise it if the camera feels held back, lower it if releasing
+    # the stick still leaves the picture sliding.
+    # Measured on a 5 s full-deflection pan: 25 left the picture sliding for
+    # 1.84 s after release, 18 stopped in 0.17 s and covered three times the
+    # ground. 18 it is.
+    tracking_rate: 18.0    # deg/s
+    lead_limit: 2.0        # degrees
+
+    invert_pan: false
+    invert_tilt: false
+
+    # How hard the gimbal chases each streamed setpoint.
+    #   high (160/120) - crisp tracking, but the driver's 1-degree setpoint
+    #                    quantisation can show as stepping during slow pans
+    #   low  (20/20)   - eases between setpoints, smoother but laggy
+    move_speed_pan: 160
+    move_speed_tilt: 120
+
+    # Soft limits in degrees; .nan means "use the hardware limit"
+    # (Tiny 2 Lite: pan +-130, tilt +-90).
+    pan_min: .nan
+    pan_max: .nan
+    tilt_min: .nan
+    tilt_max: .nan
+
+    # Stop if commands go stale, so a dead publisher cannot leave the gimbal
+    # panning into its end stop.
+    cmd_timeout: 0.5
