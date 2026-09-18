@@ -178,6 +178,31 @@ def _iowr(nr: int, size: int) -> int:
     return (3 << 30) | (size << 16) | (ord("V") << 8) | nr
 
 
+class _XuQuery(ctypes.Structure):
+    _fields_ = [
+        ("unit", ctypes.c_uint8),
+        ("selector", ctypes.c_uint8),
+        ("query", ctypes.c_uint8),
+        ("size", ctypes.c_uint16),
+        ("data", ctypes.POINTER(ctypes.c_uint8)),
+    ]
+
+
+UVCIOC_CTRL_QUERY = (3 << 30) | (ctypes.sizeof(_XuQuery) << 16) | (ord("u") << 8) | 0x21
+UVC_SET_CUR, UVC_GET_CUR = 0x01, 0x81
+
+# OBSBOT vendor extension unit (bUnitID 2, GUID 9a1e7291-6843-4683-6d92-39bc7906ee49).
+# Selector 6 takes a raw 60-byte [tag][len][value...] write and reads back a
+# status block. Only the AI-tracking tag is used here; it is documented by two
+# independent captures of OBSBOT Center (mitchelloharawild/obsbot-tiny-2-control,
+# lxman/obsbot-mcp) and verified on a Tiny 2 Lite: byte 24 of the status block
+# mirrors the enable value.
+OBSBOT_XU_UNIT = 2
+OBSBOT_XU_SETTINGS = 6
+OBSBOT_XU_LEN = 60
+_XU_TAG_AI_TRACKING = 0x16
+_XU_STATUS_AI_TRACKING = 24
+
 VIDIOC_QUERYCTRL = _iowr(36, ctypes.sizeof(_QueryCtrl))
 VIDIOC_G_CTRL = _iowr(27, ctypes.sizeof(_Control))
 VIDIOC_S_CTRL = _iowr(28, ctypes.sizeof(_Control))
@@ -438,6 +463,41 @@ class PtzDevice:
     def stop(self) -> None:
         """Zero both velocities."""
         self.set_velocity(0.0, 0.0)
+
+    # -- vendor extension unit ----------------------------------------------
+
+    def _xu(self, selector: int, query: int, data: bytes = b"") -> bytes:
+        buf = (ctypes.c_uint8 * OBSBOT_XU_LEN)()
+        buf[: len(data)] = data
+        req = _XuQuery(unit=OBSBOT_XU_UNIT, selector=selector, query=query,
+                       size=OBSBOT_XU_LEN, data=ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8)))
+        try:
+            fcntl.ioctl(self._fd, UVCIOC_CTRL_QUERY, req)
+        except OSError as exc:
+            raise PtzError(f"vendor unit selector {selector} query {query:#x} failed: {exc.strerror}") from exc
+        return bytes(buf)
+
+    @property
+    def has_vendor_unit(self) -> bool:
+        try:
+            self._xu(OBSBOT_XU_SETTINGS, UVC_GET_CUR)
+            return True
+        except PtzError:
+            return False
+
+    def get_ai_tracking(self) -> bool:
+        """Is the camera's own person tracking active?"""
+        return self._xu(OBSBOT_XU_SETTINGS, UVC_GET_CUR)[_XU_STATUS_AI_TRACKING] != 0
+
+    def set_ai_tracking(self, enabled: bool, framing: int = 0) -> None:
+        """Turn the camera's AI person tracking on or off.
+
+        With it on the camera drives the gimbal by itself and fights every
+        command this driver sends. An open-palm gesture in front of the lens
+        toggles it, so callers should re-check periodically.
+        """
+        self._xu(OBSBOT_XU_SETTINGS, UVC_SET_CUR,
+                 bytes([_XU_TAG_AI_TRACKING, 0x02, 0x02 if enabled else 0x00, framing & 0xFF]))
 
     # -- position (absolute, degrees) ---------------------------------------
 

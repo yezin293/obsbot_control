@@ -54,6 +54,8 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 from .v4l2_ptz import (
+    CID_FOCUS_ABSOLUTE,
+    CID_FOCUS_AUTO,
     CID_ZOOM_ABSOLUTE,
     PtzDevice,
     PtzError,
@@ -121,6 +123,16 @@ class ObsbotPtzNode(Node):
         self.declare_parameter("invert_pan", False)
         self.declare_parameter("invert_tilt", False)
 
+        # The camera's own person tracking drives the gimbal by itself and
+        # fights the stick. Off unless you really want it; an open-palm
+        # gesture at the lens toggles it, so the driver re-checks every 2 s.
+        self.declare_parameter("ai_tracking", False)
+
+        # Autofocus on by default. Off fixes the distance: focus 0 (far) ..
+        # 100 (near), only used when autofocus is false. Applied once awake.
+        self.declare_parameter("autofocus", True)
+        self.declare_parameter("focus", 0)
+
         # Soft limits in degrees, enforced against the measured position.
         # NaN means "use the hardware limit".
         self.declare_parameter("pan_min", float("nan"))
@@ -177,6 +189,9 @@ class ObsbotPtzNode(Node):
         self._target: tuple[float | None, float | None] | None = None  # goto in progress
         self._target_deadline = 0.0
         self._last_zoom: int | None = None
+        self._focus_applied = False
+        self._tracking_checked = 0.0
+        self._enforce_ai_tracking(time.monotonic(), startup=True)
         self._fault_logged = False
 
         self.create_subscription(
@@ -375,6 +390,7 @@ class ObsbotPtzNode(Node):
             self.pos = pos
 
         self._manage_stream(now)
+        self._enforce_ai_tracking(now)
 
         stale = (
             self.get_clock().now() - self.last_cmd_time
@@ -414,6 +430,8 @@ class ObsbotPtzNode(Node):
         self.zoom = _clamp(self.zoom + cmd[2] * max_zoom * self.dt, 0.0, 1.0)
         if self.awake:
             self._push_zoom()
+            if not self._focus_applied:
+                self._apply_focus()
 
     def _write_velocity(self, pan: int, tilt: int, now: float) -> None:
         """Send a velocity when it changes, or periodically while moving."""
@@ -456,6 +474,40 @@ class ObsbotPtzNode(Node):
             f"re-sending stop ({self._stop_retries}/{_STOP_RETRIES})"
         )
         self._safe(self.dev.stop)
+
+    def _enforce_ai_tracking(self, now: float, startup: bool = False) -> None:
+        """Keep the camera's AI tracking in the state the parameter asks for."""
+        if now - self._tracking_checked < 2.0:
+            return
+        self._tracking_checked = now
+        want = bool(self.get_parameter("ai_tracking").value)
+        try:
+            actual = self.dev.get_ai_tracking()
+            if actual != want:
+                self.dev.set_ai_tracking(want)
+                self.get_logger().info(
+                    f"AI tracking was {'on' if actual else 'off'}; turned {'on' if want else 'off'}"
+                    + ("" if startup else " (toggled by a gesture?)")
+                )
+            elif startup:
+                self.get_logger().info(f"AI tracking {'on' if actual else 'off'}")
+        except PtzError as exc:
+            if startup:
+                self.get_logger().warning(f"cannot reach the vendor unit for AI tracking: {exc}")
+            self._tracking_checked = now + 60.0  # do not spam
+
+    def _apply_focus(self) -> None:
+        """Set autofocus on/off and, if off, the fixed focus distance."""
+        self._focus_applied = True
+        if not self.dev.supports(CID_FOCUS_AUTO):
+            return
+        auto = bool(self.get_parameter("autofocus").value)
+        if self._safe(self.dev.set, CID_FOCUS_AUTO, 1 if auto else 0) is None:
+            return
+        if not auto and self.dev.supports(CID_FOCUS_ABSOLUTE):
+            focus = int(self.get_parameter("focus").value)
+            self._safe(self.dev.set, CID_FOCUS_ABSOLUTE, focus)
+            self.get_logger().info(f"autofocus off, focus fixed at {focus}")
 
     def _push_zoom(self) -> None:
         """Write zoom only when the register value changes.

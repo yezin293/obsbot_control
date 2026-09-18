@@ -310,6 +310,8 @@ Start in [config/ptz.yaml](src/obsbot_ptz/config/ptz.yaml):
 | `pan_min`/`pan_max`, `tilt_min`/`tilt_max` | soft limits in degrees, enforced against the measured position; `.nan` uses the hardware limit |
 | `cmd_timeout` | watchdog window |
 | `stream` | see above |
+| `ai_tracking` | the camera's own person tracking; `false` (default) and re-checked every 2 s, because an open-palm gesture at the lens turns it back on |
+| `autofocus`, `focus` | autofocus on by default; off fixes the distance (0 far … 100 near) |
 
 Joystick feel lives in [config/joystick.yaml](src/obsbot_ptz/config/joystick.yaml)
 — `deadzone` and `expo` (0 = linear, 1 = heavily curved; the gimbal is smooth
@@ -400,9 +402,10 @@ is the opposite of the camera's motion.
 # dx > 0: scene slid right, so the camera panned LEFT
 ```
 
-## What is past the standard interface
+## The one vendor command
 
-The camera also publishes a vendor extension unit that OBSBOT Center drives:
+Pan, tilt, zoom and focus are all standard UVC. The camera also publishes a
+vendor extension unit that OBSBOT Center drives:
 
 ```
 Extension Unit, bUnitID 2
@@ -410,13 +413,20 @@ guidExtensionCode {9a1e7291-6843-4683-6d92-39bc7906ee49}
 bNumControls 19
 ```
 
-It is reachable from userspace via `UVCIOC_CTRL_QUERY` (selector 8 returns the
-ASCII string `Tiny 2 Lite StreamCamera`), and that is where the AI tracking
-modes live. The command encoding is unknown; writing invented bytes to a
-vendor unit is how a camera ends up in a state no public tool can clear.
-`lxman/obsbot-mcp`, `cgevans/tiny2` and `taxfromdk/obsbot_tiny_reversing`
-have done some of that work if you need it. Pan, tilt and zoom do not — the
-standard interface covers them completely.
+The driver uses exactly one command from it: **AI tracking off**. Out of the
+box the camera tracks people by itself, which means it drives the gimbal
+underneath the joystick, and an open-palm gesture at the lens toggles it at
+any time. The encoding — a 60-byte `[0x16][2][enable][framing]` write to
+selector 6, reachable unprivileged through `UVCIOC_CTRL_QUERY` — comes from
+two independent USB captures of OBSBOT Center
+([mitchelloharawild/obsbot-tiny-2-control](https://github.com/mitchelloharawild/obsbot-tiny-2-control),
+[lxman/obsbot-mcp](https://github.com/lxman/obsbot-mcp)) and was verified
+here: byte 24 of the selector-6 status block mirrors the enable value.
+
+Nothing else on that unit is touched. The other modes (gesture control, zone
+tracking, presets stored on the camera) are documented in those projects if
+you need them; writing invented bytes to a vendor unit is how a camera ends
+up in a state no public tool can clear.
 
 ## Notes
 
@@ -426,6 +436,5 @@ standard interface covers them completely.
   before its own end stop.
 - Your user needs access to the camera node (`video` group, or the seat ACL
   that `logind` already grants on a desktop login).
-- Motorised tracking, face-follow and the other AI modes live behind the
-  vendor XU commands and are **not** reachable this way. If you need them,
-  that is where the official SDK or a reverse-engineered XU project comes in.
+- The AI modes (face-follow, gesture control, on-camera presets) live behind
+  the vendor XU. The driver only ever turns tracking off — see above.

@@ -24,6 +24,18 @@
     invert_pan: false
     invert_tilt: false
 
+    # The camera's own AI person tracking. Leave off: with it on the camera
+    # drives the gimbal by itself and fights the stick. An open-palm gesture
+    # at the lens toggles it on the hardware; the driver re-checks every 2 s
+    # and puts it back.
+    ai_tracking: false
+
+    # Autofocus is usually right. If it hunts, turn it off and fix the
+    # distance: focus 0 = far .. 100 = near (measured: 0 matches autofocus
+    # for a room; try v4l2-ctl -c focus_absolute=N live to pick a value).
+    autofocus: true
+    focus: 0
+
     # Soft limits in degrees, enforced against the camera's measured position;
     # .nan means "use the hardware limit" (Tiny 2 Lite reports +-130 / +-90).
     pan_min: .nan
