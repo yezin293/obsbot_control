@@ -28,7 +28,7 @@ from .video import TopicSource, V4l2Source  # noqa: I001  isort:skip
 
 import rclpy
 from geometry_msgs.msg import Vector3
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QApplication,
@@ -47,11 +47,13 @@ from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState, Joy
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from std_srvs.srv import Trigger
 
 from . import theme
 from .hud import VideoHud, pixel_to_angles
-from .panels import AttitudeMap, JoystickMonitor, Readout
+from .panels import AttitudeMap, JoystickMonitor, Readout, SpeedBar
 
 PRESET_PATH = os.path.expanduser("~/.config/obsbot_gcs/presets.json")
 
@@ -108,6 +110,10 @@ class GcsBridge(Node):
         self.goto_pub = self.create_publisher(Vector3, "goto_ptz", 10)
         self.home_client = self.create_client(Trigger, "home")
         self.release_client = self.create_client(Trigger, "release_stream")
+        # The stick speed scale lives in joy_to_ptz, so the driver's own rate
+        # limits and click-to-point are untouched by it.
+        self._scale_set = self.create_client(SetParameters, "joy_to_ptz/set_parameters")
+        self._scale_get = self.create_client(GetParameters, "joy_to_ptz/get_parameters")
 
     # -- telemetry -----------------------------------------------------------
 
@@ -181,13 +187,15 @@ class GcsBridge(Node):
         # would otherwise keep reading a stale value and stop accumulating.
         self.zoom = zoom
 
-    def release_driver_stream(self, timeout: float = 1.5) -> bool:
+    def release_driver_stream(self, timeout: float = 5.0) -> bool:
         """Ask the driver to drop its keepalive stream so we can capture.
 
         Velocity commands only work while the camera streams, so the driver
         keeps a stream of its own whenever nobody else does -- which is exactly
         what blocks our capture from opening. Only one process can stream.
         Called from the GUI thread; the executor thread answers the future.
+        The timeout is generous because at launch every node starts at once
+        and Foxy discovery can take a couple of seconds.
         """
         if not self.release_client.wait_for_service(timeout_sec=timeout):
             return False
@@ -196,6 +204,32 @@ class GcsBridge(Node):
         while not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         return future.done() and future.result() is not None and future.result().success
+
+    def set_stick_scale(self, percent: int) -> None:
+        """Scale joystick pan/tilt rates, 10-100 %, live."""
+        if not self._scale_set.service_is_ready():
+            self.get_logger().warning("joy_to_ptz not running; speed scale not applied")
+            return
+        req = SetParameters.Request()
+        req.parameters = [Parameter(
+            name="scale",
+            value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=percent / 100.0),
+        )]
+        self._scale_set.call_async(req)
+
+    def read_stick_scale(self, on_value) -> None:
+        """Fetch the current scale from joy_to_ptz; `on_value(percent)` runs in the executor thread."""
+        if not self._scale_get.service_is_ready():
+            return
+        req = GetParameters.Request()
+        req.names = ["scale"]
+
+        def done(future) -> None:
+            result = future.result()
+            if result and result.values and result.values[0].type == ParameterType.PARAMETER_DOUBLE:
+                on_value(int(round(result.values[0].double_value * 100)))
+
+        self._scale_get.call_async(req).add_done_callback(done)
 
     def home(self) -> None:
         if self.home_client.service_is_ready():
@@ -249,6 +283,15 @@ class GcsWindow(QMainWindow):
             layout.addWidget(self.sidebar)
         self.setCentralWidget(root)
 
+        # Speed bar: overlays the top of the video, hidden until the mouse
+        # touches the top edge. Parented to root so it can float above the
+        # HUD regardless of the layout.
+        self.speed_bar = SpeedBar(root)
+        self.speed_bar.changed.connect(self.bridge.set_stick_scale)
+        self.hud.setMouseTracking(True)
+        self.hud.installEventFilter(self)
+        self._scale_synced = False
+
         self.video = self._open_video()
         self._bind_shortcuts()
 
@@ -285,14 +328,23 @@ class GcsWindow(QMainWindow):
 
         # Most likely the driver's keepalive stream holds the device. Ask it
         # to step aside, then retry while it winds down.
+        log = self.bridge.get_logger()
+        log.info(f"{first_error}; asking the driver to release its stream")
         if self.bridge.release_driver_stream():
-            deadline = time.monotonic() + 4.0
+            deadline = time.monotonic() + 6.0
+            attempts = 0
             while time.monotonic() < deadline:
                 time.sleep(0.25)
+                attempts += 1
                 try:
-                    return V4l2Source(device, *size)
+                    source = V4l2Source(device, *size)
+                    log.info(f"capture opened after {attempts} retries")
+                    return source
                 except RuntimeError as exc:
                     first_error = exc
+            log.warning(f"capture still busy after {attempts} retries: {first_error}")
+        else:
+            log.warning("driver did not answer release_stream; is ptz_node running?")
         self.hud.status_text = str(first_error)
         return None
 
@@ -396,6 +448,28 @@ class GcsWindow(QMainWindow):
         # hidden there is no window chrome left to click.
         QShortcut(QKeySequence(Qt.Key_F11), self, self.toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key_Escape), self, self.leave_fullscreen)
+        # Stick speed, 10 % a step. '=' is '+' without shift on most layouts.
+        for key in (Qt.Key_Plus, Qt.Key_Equal):
+            QShortcut(QKeySequence(key), self, lambda: self.speed_bar.step(+10))
+        for key in (Qt.Key_Minus, Qt.Key_Underscore):
+            QShortcut(QKeySequence(key), self, lambda: self.speed_bar.step(-10))
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.hud and event.type() == QEvent.MouseMove:
+            if event.pos().y() <= 12 and not self.speed_bar.isVisible():
+                self._place_speed_bar()
+                self.speed_bar.reveal()
+        return super().eventFilter(obj, event)
+
+    def _place_speed_bar(self) -> None:
+        top_left = self.hud.mapTo(self.speed_bar.parentWidget(), self.hud.rect().topLeft())
+        self.speed_bar.setGeometry(top_left.x(), top_left.y(), self.hud.width(),
+                                   self.speed_bar.sizeHint().height())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.speed_bar.isVisible():
+            self._place_speed_bar()
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -477,6 +551,12 @@ class GcsWindow(QMainWindow):
 
     def _refresh(self) -> None:
         bridge = self.bridge
+
+        if not self._scale_synced and bridge._scale_get.service_is_ready():
+            self._scale_synced = True
+            bridge.read_stick_scale(
+                lambda pct: QTimer.singleShot(0, lambda: self.speed_bar.set_percent(pct, emit=False))
+            )
 
         if self.video is not None:
             self.hud.set_frame(self.video.latest(), self.video.fps)

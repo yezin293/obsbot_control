@@ -163,9 +163,15 @@ know what the gimbal is doing before touching the stick.
 | `H` | home |
 | `1`–`4` | recall preset |
 | `S`, then a slot | store preset (persists to `~/.config/obsbot_gcs/presets.json`) |
+| **mouse to the top edge** | slides down the stick-speed bar: 10–100 % of the configured rates, click anywhere on it |
+| `+` / `-` | stick speed ±10 %, with the bar flashing the new value |
 
 Wheel zoom is deliberately a zoom-only command, so scrolling mid-shot does not
 jerk a pan in progress to a halt.
+
+The speed bar scales only the joystick (it sets `scale` on `joy_to_ptz`
+live); click-to-point, presets and home keep their own `goto_rate`. It hides
+itself when the mouse leaves, so an audience-facing screen stays clean.
 
 ### Presentation modes
 
@@ -285,7 +291,7 @@ work while one does. The driver's `stream` parameter says who:
 
 | `stream` | behaviour |
 | --- | --- |
-| `auto` (default) | the driver runs a small 640×360 keepalive capture of its own unless something else already streams. When the GCS opens the camera it calls `release_stream`, the driver drops its capture for 5 s, and the GCS takes over. When the GCS exits, the driver notices within a second and resumes |
+| `auto` (default) | the driver runs a small 640×360 keepalive capture of its own unless something else already streams. When the GCS opens the camera it calls `release_stream`, the driver drops its capture for 8 s, and the GCS takes over. When the GCS exits, the driver notices within a second and resumes |
 | `always` | the driver streams unconditionally — a headless robot where nothing will ever capture |
 | `never` | something else must (`teleop.launch.py camera:=true` sets this for the `v4l2_camera` node); the driver only checks, and holds still while nobody streams |
 

@@ -55,4 +55,18 @@ QPushButton:checked {{
 QPushButton#danger:hover {{ border-color: {DANGER.name()}; color: {DANGER.name()}; }}
 QLabel#value {{ font-size: 24px; font-weight: bold; color: {TEXT.name()}; }}
 QLabel#unit  {{ font-size: 11px; color: {MUTED.name()}; }}
+QWidget#speedbar {{
+    background: rgba(22, 27, 34, 230);
+    border-bottom: 1px solid {BORDER.name()};
+}}
+QWidget#speedbar QLabel {{ background: transparent; font-size: 18px; font-weight: bold; }}
+QWidget#speedbar QLabel#speedvalue {{ color: {ACCENT.name()}; font-size: 24px; min-width: 80px; }}
+QSlider::groove:horizontal {{
+    height: 10px; background: {BORDER.name()}; border-radius: 5px;
+}}
+QSlider::sub-page:horizontal {{ background: {ACCENT.name()}; border-radius: 4px; }}
+QSlider::handle:horizontal {{
+    width: 26px; margin: -9px 0; background: {TEXT.name()};
+    border: 2px solid {ACCENT.name()}; border-radius: 13px;
+}}
 """

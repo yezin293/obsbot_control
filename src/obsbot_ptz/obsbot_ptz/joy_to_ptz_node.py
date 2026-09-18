@@ -165,7 +165,7 @@ class JoyToPtzNode(Node):
         zoom_in = self._button(msg, "zoom_in_button")
         zoom_out = self._button(msg, "zoom_out_button")
         if zoom_in != zoom_out:
-            cmd.linear.x = scale if zoom_in else -scale
+            cmd.linear.x = 1.0 if zoom_in else -1.0
         self.cmd_pub.publish(cmd)
 
 

@@ -286,7 +286,7 @@ class ObsbotPtzNode(Node):
 
     def on_release_stream(self, _request, response):
         """The GCS is about to capture: get out of its way for a while."""
-        self._release_until = time.monotonic() + 5.0
+        self._release_until = time.monotonic() + 8.0
         self._stream_checked = 0.0
         if self.keepalive.running:
             self._safe(self.dev.stop)
@@ -294,7 +294,7 @@ class ObsbotPtzNode(Node):
             self.awake = False
             self.get_logger().info("keepalive stream released to another capture client")
         response.success = True
-        response.message = "keepalive stream released for 5 s"
+        response.message = "keepalive stream released for 8 s"
         return response
 
     # -- callbacks -----------------------------------------------------------

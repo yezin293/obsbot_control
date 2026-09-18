@@ -40,4 +40,6 @@
     # so a higher value gives finer framing near centre while keeping full
     # rate at the edge; lower feels more direct.
     expo: 0.35
+    # Pan/tilt rate multiplier, 0.1-1.0. The GCS changes it live (top-edge
+    # slider, + / - keys); this is only the value at start-up.
     scale: 1.0

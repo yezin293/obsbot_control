@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import QPoint, QRect, Qt
+from PyQt5.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen
-from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
 from . import theme
 
@@ -173,3 +173,98 @@ class Readout(QWidget):
 
     def set(self, value: float, fmt: str = "{:+.1f}") -> None:
         self.value.setText(fmt.format(value) + self.unit)
+
+
+class _JumpSlider(QSlider):
+    """A slider that jumps to wherever it is clicked, not one page step."""
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.orientation() == Qt.Horizontal:
+            span = self.maximum() - self.minimum()
+            frac = (event.pos().x() - 13) / max(1, self.width() - 26)  # handle radius
+            value = self.minimum() + span * min(1.0, max(0.0, frac))
+            self.setValue(int(round(value / self.singleStep())) * self.singleStep())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class SpeedBar(QWidget):
+    """Slide-down bar with the joystick speed scale, 10-100 %.
+
+    Lives on top of the video, hidden until the mouse touches the top edge of
+    the window (or a speed key is pressed), and slides away again when the
+    mouse leaves. Nothing is drawn while it is hidden, so an audience-facing
+    screen stays clean.
+    """
+
+    changed = pyqtSignal(int)  # percent
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("speedbar")
+        # A plain QWidget ignores stylesheet backgrounds unless told otherwise.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.hide)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(28, 16, 28, 16)
+        row.setSpacing(22)
+        row.addWidget(QLabel("STICK SPEED"))
+        self.slider = _JumpSlider(Qt.Horizontal)
+        self.slider.setRange(10, 100)
+        self.slider.setSingleStep(10)
+        self.slider.setPageStep(10)
+        self.slider.setTickInterval(10)
+        self.slider.setTickPosition(QSlider.TicksBelow)
+        self.slider.setValue(100)
+        self.slider.valueChanged.connect(self._on_slider)
+        row.addWidget(self.slider, 1)
+        self.value = QLabel("100%")
+        self.value.setObjectName("speedvalue")
+        self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(self.value)
+        row.addWidget(QLabel("  + / −  keys"))
+        self.hide()
+
+    def percent(self) -> int:
+        return self.slider.value()
+
+    def set_percent(self, percent: int, emit: bool = True) -> None:
+        percent = max(10, min(100, int(round(percent / 10.0)) * 10))
+        if not emit:
+            self.slider.blockSignals(True)
+        self.slider.setValue(percent)
+        self.value.setText(f"{percent}%")
+        if not emit:
+            self.slider.blockSignals(False)
+
+    def step(self, delta: int) -> None:
+        self.set_percent(self.percent() + delta)
+        self.flash()
+
+    def reveal(self) -> None:
+        self._hide_timer.stop()
+        self.show()
+        self.raise_()
+
+    def flash(self, ms: int = 1500) -> None:
+        """Show briefly, e.g. after a keyboard change, then slide away."""
+        self.reveal()
+        if not self.underMouse():
+            self._hide_timer.start(ms)
+
+    def _on_slider(self, percent: int) -> None:
+        self.value.setText(f"{percent}%")
+        self.changed.emit(percent)
+
+    def leaveEvent(self, event) -> None:
+        self._hide_timer.start(500)
+        super().leaveEvent(event)
+
+    def enterEvent(self, event) -> None:
+        self._hide_timer.stop()
+        super().enterEvent(event)
+
