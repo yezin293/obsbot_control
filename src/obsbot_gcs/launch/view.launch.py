@@ -91,6 +91,7 @@ def generate_launch_description() -> LaunchDescription:
             # gcs.yaml, so the two launch files cannot drift apart.
             parameters=[gcs_config, {
                 "show_overlay": False,
+                "show_ladders": True,
                 "show_panels": False,
                 "fullscreen": fullscreen,
             }],

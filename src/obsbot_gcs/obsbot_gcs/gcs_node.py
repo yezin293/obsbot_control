@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -70,6 +71,7 @@ class GcsBridge(Node):
         # Presentation. The defaults keep the picture clean -- nothing is drawn
         # over the video -- because this ends up on a screen an audience sees.
         self.declare_parameter("show_overlay", False)
+        self.declare_parameter("show_ladders", False)
         self.declare_parameter("show_panels", True)
         self.declare_parameter("fullscreen", False)
 
@@ -216,6 +218,7 @@ class GcsWindow(QMainWindow):
         self.hud.clicked.connect(self._on_hud_click)
         self.hud.zoomed.connect(self._on_hud_wheel)
         self.hud.show_overlay = bool(bridge.get_parameter("show_overlay").value)
+        self.hud.show_ladders = bool(bridge.get_parameter("show_ladders").value)
         pan_limit = float(bridge.get_parameter("pan_limit").value)
         tilt_limit = float(bridge.get_parameter("tilt_limit").value)
         self.hud.pan_limits = (-pan_limit, pan_limit)
@@ -523,6 +526,12 @@ def main(args=None) -> None:
     # Strip --ros-args and friends so Qt does not choke on them; what is left
     # is still available for Qt's own flags (-style, -platform, ...).
     app = QApplication(remove_ros_args(sys.argv))
+    # Ctrl-C in the launch terminal must close the window, not leave Qt's
+    # event loop ignoring the signal until launch escalates to SIGTERM.
+    # Python only runs the handler between event-loop callbacks, and the
+    # 33 ms refresh timer provides those.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
     window = GcsWindow(bridge)
     window._refresh_preset_labels()
     window.present()

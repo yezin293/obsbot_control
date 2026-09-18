@@ -241,9 +241,10 @@ class ObsbotPtzNode(Node):
         was_awake = self.awake
         self._update_awake(now)
         if self.awake and not was_awake:
-            # On waking the camera settles itself for a moment (it has been
-            # seen re-centring); give it a few seconds before judging stops.
-            self._quiet_until = now + 3.0
+            # A camera left unstreamed parks its lens (tilt to about -84) and,
+            # on waking, drives itself back to where it was -- seen starting
+            # as late as 10 s after frames begin. Not a runaway.
+            self._quiet_until = now + 12.0
 
     def _update_awake(self, now: float) -> None:
         mode = str(self.get_parameter("stream").value)
@@ -445,7 +446,9 @@ class ObsbotPtzNode(Node):
         drift = max(abs(self.pos[0] - self._stop_check_pos[0]),
                     abs(self.pos[1] - self._stop_check_pos[1]))
         self._stop_check_at, self._stop_check_pos = now, self.pos
-        if drift < 1.0 or self._stop_retries >= _STOP_RETRIES:
+        # Position reads are 1-degree steps, so a value on a boundary can
+        # flicker by one; anything a dropped stop produces is far larger.
+        if drift < 2.0 or self._stop_retries >= _STOP_RETRIES:
             return
         self._stop_retries += 1
         self.get_logger().warning(

@@ -168,17 +168,18 @@ jerk a pan in progress to a halt.
 ### Presentation modes
 
 Nothing is drawn over the video by default — the readouts live in the sidebar,
-so the picture itself stays clean enough to put in front of an audience. Three
-parameters control the framing, and `view.launch.py` sets all three:
+so the picture itself stays clean enough to put in front of an audience. Four
+parameters control the framing, and `view.launch.py` sets all of them:
 
 | Parameter | Effect |
 | --- | --- |
 | `show_overlay` | telemetry and travel ladders drawn on the picture (default off) |
+| `show_ladders` | only the pan/tilt travel bars, with the current angle riding on the marker — on in `view.launch.py`, so a screen with no sidebar still shows how far from centre the camera is and when it nears an end stop |
 | `show_panels` | sidebar and button bar (default on) |
 | `fullscreen` | open fullscreen rather than maximised |
 
 `view.launch.py` runs the **identical stack** — same driver, same joystick,
-same click-to-point, presets, wheel and keys — and only changes those three.
+same click-to-point, presets, wheel and keys — and only changes those.
 Functional parameters still come from the same `gcs.yaml`, so the two launch
 files cannot drift apart.
 

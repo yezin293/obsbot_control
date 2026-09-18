@@ -12,10 +12,13 @@
 
     # Presentation.
     #   show_overlay - draw telemetry and travel ladders over the picture
+    #   show_ladders - only the pan/tilt travel bars (how far from centre,
+    #                  amber near an end stop); view.launch.py turns this on
     #   show_panels  - side panels and the button bar
     #   fullscreen   - open fullscreen instead of maximised (F11 toggles)
     # view.launch.py overrides all three for a clean, audience-facing screen.
     show_overlay: false
+    show_ladders: false
     show_panels: true
     fullscreen: false
 

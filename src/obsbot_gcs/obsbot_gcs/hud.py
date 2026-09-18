@@ -46,6 +46,10 @@ class VideoHud(QWidget):
         # Off means nothing at all is drawn over the picture. That is the point
         # for a screen an audience looks at; the sidebar still has the numbers.
         self.show_overlay = False
+        # Just the two travel bars, no text block: enough to see how far from
+        # centre the camera is and when it is about to hit an end stop, for a
+        # display with no sidebar (view.launch.py).
+        self.show_ladders = False
         self.status_text = "waiting for driver"
 
         self._click_marker: tuple[float, float, float] | None = None
@@ -89,10 +93,11 @@ class VideoHud(QWidget):
         painter.fillRect(self.rect(), theme.BG)
 
         self._video_rect = self._draw_video(painter)
-        if self.show_overlay:
-            self._draw_crosshair(painter, self._video_rect)
+        if self.show_overlay or self.show_ladders:
             self._draw_pan_ladder(painter, self._video_rect)
             self._draw_tilt_ladder(painter, self._video_rect)
+        if self.show_overlay:
+            self._draw_crosshair(painter, self._video_rect)
             self._draw_telemetry(painter, self._video_rect)
         # The click ripple stays either way: it is transient feedback that the
         # click landed, not a readout, and without it click-to-point feels dead.
@@ -133,6 +138,10 @@ class VideoHud(QWidget):
             painter.drawLine(cx, cy + dx * 8, cx, cy + dx * 26)
         painter.drawEllipse(QPoint(cx, cy), 3, 3)
 
+    def _scale(self, rect: QRect) -> float:
+        """Overlay scale factor: 1.0 at 720p, larger on a big display."""
+        return max(1.0, rect.height() / 720.0)
+
     def _draw_pan_ladder(self, painter: QPainter, rect: QRect) -> None:
         """Horizontal travel bar along the bottom edge.
 
@@ -141,24 +150,26 @@ class VideoHud(QWidget):
         view matters more here than matching the sign convention.
         """
         low, high = self.pan_limits
-        margin, height = 60, 10
-        bar = QRect(rect.x() + margin, rect.bottom() - 34,
+        k = self._scale(rect)
+        margin, height = int(60 * k), int(10 * k)
+        bar = QRect(rect.x() + margin, rect.bottom() - int(34 * k),
                     rect.width() - 2 * margin, height)
         self._draw_bar(painter, bar, low, high, self.pan, "PAN",
-                       horizontal=True, mirror=True)
+                       horizontal=True, mirror=True, k=k)
 
     def _draw_tilt_ladder(self, painter: QPainter, rect: QRect) -> None:
         """Vertical travel bar along the right edge, up at the top."""
         low, high = self.tilt_limits
-        margin, width = 60, 10
-        bar = QRect(rect.right() - 34, rect.y() + margin,
+        k = self._scale(rect)
+        margin, width = int(60 * k), int(10 * k)
+        bar = QRect(rect.right() - int(34 * k), rect.y() + margin,
                     width, rect.height() - 2 * margin)
         self._draw_bar(painter, bar, low, high, self.tilt, "TILT",
-                       horizontal=False, mirror=True)
+                       horizontal=False, mirror=True, k=k)
 
     def _draw_bar(self, painter: QPainter, bar: QRect, low: float, high: float,
                   value: float, label: str, horizontal: bool,
-                  mirror: bool) -> None:
+                  mirror: bool, k: float = 1.0) -> None:
         painter.setPen(QPen(theme.HUD_DIM, 1))
         painter.setBrush(QColor(13, 17, 23, 140))
         painter.drawRect(bar)
@@ -170,37 +181,50 @@ class VideoHud(QWidget):
         near_limit = frac < 0.08 or frac > 0.92
         colour = theme.WARN if near_limit else theme.HUD
         along = (1.0 - frac) if mirror else frac
+        t = max(1, int(3 * k))   # marker half-width / tick overhang
 
         # Centre tick marks the home pose.
         painter.setPen(QPen(theme.HUD_DIM, 1))
         if horizontal:
             mid = bar.x() + bar.width() // 2
-            painter.drawLine(mid, bar.y() - 3, mid, bar.bottom() + 3)
+            painter.drawLine(mid, bar.y() - t, mid, bar.bottom() + t)
             pos = int(bar.x() + along * bar.width())
-            marker = QRect(pos - 3, bar.y() - 4, 6, bar.height() + 8)
+            marker = QRect(pos - t, bar.y() - t - 1, 2 * t, bar.height() + 2 * t + 2)
         else:
             mid = bar.y() + bar.height() // 2
-            painter.drawLine(bar.x() - 3, mid, bar.right() + 3, mid)
+            painter.drawLine(bar.x() - t, mid, bar.right() + t, mid)
             pos = int(bar.y() + along * bar.height())
-            marker = QRect(bar.x() - 4, pos - 3, bar.width() + 8, 6)
+            marker = QRect(bar.x() - t - 1, pos - t, bar.width() + 2 * t + 2, 2 * t)
 
         painter.setPen(QPen(colour, 1))
         painter.setBrush(colour)
         painter.drawRect(marker)
         painter.setBrush(Qt.NoBrush)
 
+        # Current angle rides with the marker, so the number is where the eye
+        # already is. Kept on the picture side of the bar.
+        painter.setFont(QFont("DejaVu Sans Mono", int(10 * k), QFont.Bold))
+        painter.setPen(colour)
+        reading = f"{value:+.0f}°"
+        if horizontal:
+            painter.drawText(QRect(pos - int(40 * k), bar.y() - int(24 * k), int(80 * k), int(20 * k)),
+                             Qt.AlignHCenter | Qt.AlignBottom, reading)
+        else:
+            painter.drawText(QRect(bar.x() - int(70 * k), pos - int(10 * k), int(62 * k), int(20 * k)),
+                             Qt.AlignRight | Qt.AlignVCenter, reading)
+
         # End labels follow the mirroring, so they always name the end the
         # marker actually travels toward.
         near_end, far_end = (high, low) if mirror else (low, high)
-        painter.setFont(QFont("DejaVu Sans Mono", 8))
+        painter.setFont(QFont("DejaVu Sans Mono", int(8 * k)))
         painter.setPen(theme.HUD_DIM)
         if horizontal:
-            painter.drawText(bar.x(), bar.y() - 6, f"{label} {near_end:+.0f}")
-            painter.drawText(bar.right() - 26, bar.y() - 6, f"{far_end:+.0f}")
+            painter.drawText(bar.x(), bar.y() - int(6 * k), f"{label} {near_end:+.0f}")
+            painter.drawText(bar.right() - int(26 * k), bar.y() - int(6 * k), f"{far_end:+.0f}")
         else:
-            painter.drawText(bar.right() - 68, bar.y() - 6,
+            painter.drawText(bar.right() - int(68 * k), bar.y() - int(6 * k),
                              f"{label} {near_end:+.0f}")
-            painter.drawText(bar.right() - 30, bar.bottom() + 14, f"{far_end:+.0f}")
+            painter.drawText(bar.right() - int(30 * k), bar.bottom() + int(14 * k), f"{far_end:+.0f}")
 
     def _draw_telemetry(self, painter: QPainter, rect: QRect) -> None:
         painter.setFont(QFont("DejaVu Sans Mono", 11, QFont.Bold))
