@@ -34,8 +34,10 @@ camera terminal**, so the in-kernel `uvcvideo` driver already publishes the
 gimbal as ordinary V4L2 controls:
 
 ```
-Pan,  Absolute   ±468000  step 3600  →  ±130°, 1° per step
+Pan,  Absolute   ±468000  step 3600  →  ±130°, 1° per step   (position readback)
 Tilt, Absolute   ±324000  step 3600  →   ±90°, 1° per step
+Pan,  Speed      ±160                →  deg/s, velocity      (what the driver writes)
+Tilt, Speed      ±120                →  deg/s, velocity
 Zoom, Absolute      0–100
 ```
 
@@ -354,8 +356,8 @@ plain `/dev/videoN` and skips the probe.
 was: the driver used to write the zoom control on every control tick, 50 USB
 transfers a second for a value that only moves in integer steps. The camera
 fell behind, kept zooming in after the button was released, and swallowed the
-start of every zoom-out. `_push` now writes zoom only when the register value
-changes. If you raise `max_zoom_rate` far above 0.15 you can bring it back.
+start of every zoom-out. The driver now writes zoom only when the register
+value changes. If you raise `max_zoom_rate` far above 0.15 you can bring it back.
 
 **Zoom does nothing at all.** Zoom is only applied while the camera is
 streaming, the same as pan and tilt. With `stream: auto` the driver's
