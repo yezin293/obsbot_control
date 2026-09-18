@@ -17,6 +17,7 @@ import math
 import os
 import sys
 import threading
+import time
 
 # Imported ahead of PyQt5 on purpose: this pulls in OpenCV, and the pip build
 # of OpenCV redirects Qt's plugin search path to its own bundled copy on
@@ -104,6 +105,7 @@ class GcsBridge(Node):
         )
         self.goto_pub = self.create_publisher(Vector3, "goto_ptz", 10)
         self.home_client = self.create_client(Trigger, "home")
+        self.release_client = self.create_client(Trigger, "release_stream")
 
     # -- telemetry -----------------------------------------------------------
 
@@ -176,6 +178,22 @@ class GcsBridge(Node):
         # Apply locally too. ptz_state only arrives at 20 Hz, so a fast scroll
         # would otherwise keep reading a stale value and stop accumulating.
         self.zoom = zoom
+
+    def release_driver_stream(self, timeout: float = 1.5) -> bool:
+        """Ask the driver to drop its keepalive stream so we can capture.
+
+        Velocity commands only work while the camera streams, so the driver
+        keeps a stream of its own whenever nobody else does -- which is exactly
+        what blocks our capture from opening. Only one process can stream.
+        Called from the GUI thread; the executor thread answers the future.
+        """
+        if not self.release_client.wait_for_service(timeout_sec=timeout):
+            return False
+        future = self.release_client.call_async(Trigger.Request())
+        deadline = time.monotonic() + timeout
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return future.done() and future.result() is not None and future.result().success
 
     def home(self) -> None:
         if self.home_client.service_is_ready():
@@ -252,16 +270,28 @@ class GcsWindow(QMainWindow):
             except PtzError as exc:
                 self.hud.status_text = str(exc)
                 return None
+        size = (
+            int(self.bridge.get_parameter("video_width").value),
+            int(self.bridge.get_parameter("video_height").value),
+            int(self.bridge.get_parameter("video_fps").value),
+        )
         try:
-            return V4l2Source(
-                device,
-                int(self.bridge.get_parameter("video_width").value),
-                int(self.bridge.get_parameter("video_height").value),
-                int(self.bridge.get_parameter("video_fps").value),
-            )
+            return V4l2Source(device, *size)
         except RuntimeError as exc:
-            self.hud.status_text = str(exc)
-            return None
+            first_error = exc
+
+        # Most likely the driver's keepalive stream holds the device. Ask it
+        # to step aside, then retry while it winds down.
+        if self.bridge.release_driver_stream():
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                try:
+                    return V4l2Source(device, *size)
+                except RuntimeError as exc:
+                    first_error = exc
+        self.hud.status_text = str(first_error)
+        return None
 
     def _build_sidebar(self) -> QWidget:
         panel = QWidget()

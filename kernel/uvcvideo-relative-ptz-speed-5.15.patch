@@ -1,0 +1,74 @@
+Subject: [PATCH] media: uvcvideo: relative pan/tilt/zoom speed: min is -max
+
+Backport for the librealsense2-dkms 5.15 uvcvideo tree of the upstream fix
+"media: uvcvideo: UVC minimum relative pan/tilt/zoom speed fix" (John Bauer,
+merged to media.git/next 2026-01, tested on an OBSBOT Tiny 2).
+
+V4L2_CID_PAN_SPEED / TILT_SPEED / ZOOM_CONTINUOUS map to UVC relative
+controls whose payload is a direction byte plus an unsigned speed. V4L2
+encodes direction as the sign, so the real range is -max..max, but the
+driver derived the minimum from UVC GET_MIN (the slowest speed, usually 1)
+and reported -1. Every negative request was then clamped to -1: "pan left
+at 40 deg/s" became "pan left at 1 deg/s". Report and clamp to -max instead.
+
+---
+--- a/5.15.0/drivers/media/usb/uvc/uvc_ctrl.c
++++ b/5.15.0/drivers/media/usb/uvc/uvc_ctrl.c
+@@ -1024,6 +1024,20 @@
+ 	return 0;
+ }
+ 
++/*
++ * Relative PTZ speed controls (UVC PANTILT_RELATIVE / ZOOM_RELATIVE) are a
++ * direction byte plus an unsigned speed byte. V4L2 folds direction into the
++ * sign, so the usable range is -max..max; UVC GET_MIN only reports the slowest
++ * speed and cannot describe that. Backport of upstream
++ * "media: uvcvideo: UVC minimum relative pan/tilt/zoom speed fix".
++ */
++static bool uvc_ctrl_is_relative_ptz(u32 v4l2_id)
++{
++	return v4l2_id == V4L2_CID_ZOOM_CONTINUOUS ||
++	       v4l2_id == V4L2_CID_PAN_SPEED ||
++	       v4l2_id == V4L2_CID_TILT_SPEED;
++}
++
+ static int __uvc_query_v4l2_ctrl(struct uvc_video_chain *chain,
+ 	struct uvc_control *ctrl,
+ 	struct uvc_control_mapping *mapping,
+@@ -1101,14 +1115,16 @@
+ 		break;
+ 	}
+ 
+-	if (ctrl->info.flags & UVC_CTRL_FLAG_GET_MIN)
+-		v4l2_ctrl->minimum = mapping->get(mapping, UVC_GET_MIN,
+-				     uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MIN));
+-
+ 	if (ctrl->info.flags & UVC_CTRL_FLAG_GET_MAX)
+ 		v4l2_ctrl->maximum = mapping->get(mapping, UVC_GET_MAX,
+ 				     uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MAX));
+ 
++	if (uvc_ctrl_is_relative_ptz(v4l2_ctrl->id))
++		v4l2_ctrl->minimum = -v4l2_ctrl->maximum;
++	else if (ctrl->info.flags & UVC_CTRL_FLAG_GET_MIN)
++		v4l2_ctrl->minimum = mapping->get(mapping, UVC_GET_MIN,
++				     uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MIN));
++
+ 	if (ctrl->info.flags & UVC_CTRL_FLAG_GET_RES)
+ 		v4l2_ctrl->step = mapping->get(mapping, UVC_GET_RES,
+ 				  uvc_ctrl_data(ctrl, UVC_CTRL_DATA_RES));
+@@ -1611,10 +1627,13 @@
+ 				return ret;
+ 		}
+ 
+-		min = mapping->get(mapping, UVC_GET_MIN,
+-				   uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MIN));
+ 		max = mapping->get(mapping, UVC_GET_MAX,
+ 				   uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MAX));
++		if (uvc_ctrl_is_relative_ptz(mapping->id))
++			min = -max;
++		else
++			min = mapping->get(mapping, UVC_GET_MIN,
++					   uvc_ctrl_data(ctrl, UVC_CTRL_DATA_MIN));
+ 		step = mapping->get(mapping, UVC_GET_RES,
+ 				    uvc_ctrl_data(ctrl, UVC_CTRL_DATA_RES));
+ 		if (step == 0)

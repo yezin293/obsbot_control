@@ -36,8 +36,8 @@
     zoom_out_button: 3
 
     deadzone: 0.10
-    # Mild on purpose. A steep curve parks most of the stick travel in the
-    # low-rate range, and this gimbal cannot pan smoothly there -- see
-    # min_pan_rate in ptz.yaml.
+    # 0 = linear, 1 = heavily curved. The gimbal is smooth down to 1 deg/s,
+    # so a higher value gives finer framing near centre while keeping full
+    # rate at the edge; lower feels more direct.
     expo: 0.35
     scale: 1.0

@@ -7,12 +7,13 @@ button is simply ignored.
 Buttons are named by the number printed on the stick, which starts at 1. ROS
 indexes from 0, so the conversion lives here rather than in your head.
 
-Why this node republishes on a timer instead of straight from the Joy callback:
-`joy_node` only publishes when something changes, so holding the stick at a
-constant deflection produces no messages, and the driver's command watchdog
-would stop the gimbal mid-pan. Re-emitting the latest stick state at a fixed
-rate keeps the command stream alive, and a separate joy-staleness timeout
-still zeroes the command if the joystick itself goes away.
+Every Joy message is turned into a command immediately, so a stick movement
+reaches the driver without waiting for a timer tick. The same command is also
+re-emitted at a fixed rate: `joy_node` only publishes when something changes,
+so holding the stick at a constant deflection would otherwise produce no
+messages and the driver's command watchdog would stop the gimbal mid-pan. A
+separate joy-staleness timeout still zeroes the command if the joystick itself
+goes away.
 """
 
 from __future__ import annotations
@@ -28,10 +29,9 @@ from std_srvs.srv import Trigger
 def _shape(value: float, deadzone: float, expo: float) -> float:
     """Apply a deadzone, rescale the remainder to full range, then curve it.
 
-    The expo curve trades resolution near centre for reach at the edges. Keep
-    it mild here: this camera cannot move smoothly at low rates anyway (see
-    `min_pan_rate` in the driver), so a steep curve just parks most of the
-    stick's travel in the range where motion looks like stuttering.
+    The expo curve trades resolution near centre for reach at the edges. The
+    gimbal is smooth right down to 1 deg/s, so a steeper curve buys genuinely
+    fine framing near centre; a flatter one feels more direct.
     """
     magnitude = abs(value)
     if magnitude <= deadzone:
@@ -100,6 +100,7 @@ class JoyToPtzNode(Node):
         if pressed and not self._home_pressed:
             self._call_home()
         self._home_pressed = pressed
+        self._publish()
 
     def _button(self, msg: Joy, param: str) -> bool:
         """Read a button by its printed number. 0 or unset means unbound."""
@@ -134,6 +135,9 @@ class JoyToPtzNode(Node):
     # -- output --------------------------------------------------------------
 
     def on_tick(self) -> None:
+        self._publish()
+
+    def _publish(self) -> None:
         cmd = Twist()
         msg = self.joy
         stale = (

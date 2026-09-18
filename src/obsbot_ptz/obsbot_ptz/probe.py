@@ -4,7 +4,7 @@ Run this first on any new OBSBOT model. Which controls appear -- and their
 ranges -- is what decides whether this driver can talk to it at all:
 
     ros2 run obsbot_ptz probe
-    ros2 run obsbot_ptz probe /dev/video2
+    ros2 run obsbot_ptz probe /dev/video0
 """
 
 from __future__ import annotations
@@ -57,7 +57,12 @@ def main() -> int:
     print()
     if dev.has_pantilt:
         pan, tilt = dev.get_pantilt_deg()
-        print(f"pan/tilt now: {pan:+.1f}, {tilt:+.1f} deg  -- driveable")
+        print(f"pan/tilt now: {pan:+.1f}, {tilt:+.1f} deg")
+        if dev.has_velocity:
+            print("velocity: OK -- speed controls report the full signed range")
+        else:
+            print("velocity: NOT usable -- speed controls report min=-1, so reverse moves "
+                  "would crawl at 1 deg/s. Install the uvcvideo patch under kernel/.")
     else:
         print("no pan/tilt controls: this device cannot be driven by obsbot_ptz")
     dev.close()

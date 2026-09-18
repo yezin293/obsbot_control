@@ -7,7 +7,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -38,7 +38,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "video_device",
-            default_value="/dev/video2",
+            default_value="/dev/video0",
             description="Capture node for the video stream (camera:=true only).",
         ),
 
@@ -63,12 +63,16 @@ def generate_launch_description() -> LaunchDescription:
             executable="ptz_node",
             name="obsbot_ptz",
             namespace="obsbot",
-            parameters=[ptz_config],
+            # With a camera node capturing, the driver must not stream itself
+            # (only one process can); it just checks that someone does.
+            parameters=[ptz_config, {"stream": PythonExpression(
+                ["'never' if '", camera, "' == 'true' else 'auto'"])}],
             output="screen",
         ),
 
-        # Control and capture are independent V4L2 file descriptors, so the
-        # gimbal stays driveable while this streams.
+        # Velocity commands only work while the camera streams. Without this
+        # node the driver keeps a small stream of its own; with it, the
+        # driver relies on this one.
         Node(
             package="v4l2_camera",
             executable="v4l2_camera_node",

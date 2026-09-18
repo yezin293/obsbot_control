@@ -1,12 +1,16 @@
 # obsbot_ptz — ROS 2 PTZ control for OBSBOT cameras
 
-ROS 2 Humble driver, joystick teleop and a ground control station for OBSBOT
+ROS 2 driver, joystick teleop and a ground control station for OBSBOT
 pan/tilt/zoom cameras, driven through plain **V4L2 UVC camera-terminal
 controls**. No vendor SDK, no reverse-engineered USB payloads, no `OBSBOT
 Center` running in the background.
 
 Verified on an **OBSBOT Tiny 2 Lite** (`3564:fef9`) with a **Logitech Extreme
-3D Pro** stick.
+3D Pro** stick, on ROS 2 Foxy (Ubuntu 20.04) and Humble (22.04).
+
+**Needs one kernel patch** for the reverse pan/tilt directions — see
+[The kernel patch](#the-kernel-patch). Without it the driver refuses to start
+and tells you why.
 
 Two packages, so a headless robot can run the driver without pulling in Qt:
 
@@ -38,38 +42,81 @@ Zoom, Absolute      0–100
 Run `ros2 run obsbot_ptz probe` on any OBSBOT to see whether the same holds
 for your model.
 
-## The one hardware surprise
+## How the camera is driven
 
-`Pan, Speed` and `Tilt, Speed` look like a velocity interface. **They are not
-— writing them moves nothing.** Measured directly: setting `Pan, Speed = 40`
-for a full second produced 0.0° of motion. They only set *how fast the gimbal
-slews toward an absolute setpoint*.
+The camera has a **real velocity interface**. UVC's `PANTILT_RELATIVE`
+control, which `uvcvideo` exposes as `Pan (Speed)` / `Tilt (Speed)`, means
+"move at this many degrees per second until told 0". Measured: one unit is one
+deg/s, exactly linear from 2 to 80, and perfectly smooth at every rate — a
+2 deg/s pan shows 0.1 px of frame-to-frame jitter.
 
-So the driver owns the integrator. A joystick rate command is acceleration-
-limited, integrated into a target angle at 50 Hz, and streamed to the camera as
-absolute setpoints — which is what makes a position-only gimbal feel like a
-velocity stick.
+So the driver is thin. A joystick deflection becomes a rate, a released stick
+becomes 0, and the position the camera itself reports is published as the
+state. There is no integrator, no setpoint streaming, no estimate of where
+the camera might be.
 
-Two further consequences worth knowing:
+Three hardware facts shape the rest of it:
 
-- **Position feedback is open-loop.** `uvcvideo` caches the control value
-  (a read takes 0.01 ms — it never reaches the camera), so `ptz_state` reports
-  the *commanded* pose, not a measured one. Fine for teleop; do not treat it as
-  an encoder.
-- **Setpoints quantise to 1°.** During slow pans that can show as stepping.
-  Lower `move_speed_pan`/`move_speed_tilt` to let the gimbal ease between
-  setpoints and smooth it out, at the cost of lag.
+**Velocity commands only work while the camera is streaming video.** Asleep,
+the gimbal ignores them; worse, a command that lands while it is dozing off
+after a stream stops can be dropped — including a stop. So the driver keeps
+the camera awake with a small capture stream of its own whenever nothing else
+is capturing, steps aside when the GCS opens the camera, and never commands
+motion until it has seen frames flowing. Details under
+[Who streams](#who-streams).
 
-Measured headroom: streaming atomic pan+tilt setpoints ran clean at both 30 Hz
-and 100 Hz — 0 errors, 0.4 ms median per write, 14 ms worst case.
+**Occasionally a stop is not acted on.** The driver reads the position back
+at 50 Hz (a real device query, 0.5 ms) and re-issues the stop if the gimbal
+is still moving 0.3 s after being told to halt. It logs when that happens.
+
+**Absolute-position commands must not be mixed with velocity.** After a
+velocity move, an absolute command can send one axis to 0 instead of where it
+was asked to go — reproducibly, but not by any rule worth trusting. So the
+driver never sends absolute positions at all: `goto`, `home` and
+click-to-point are closed loops on the measured position, driven with
+velocity, and land within the camera's 1-degree position resolution.
+
+Position resolution is 1 degree and readback lags real motion by roughly
+100 ms. Neither matters for teleop.
 
 ## Build
 
 ```bash
-cd ~/obsbot
-colcon build --symlink-install
+cd ~/ptz_cam/obsbot_control
+colcon build
 source install/setup.bash
 ```
+
+Works on Foxy and Humble; there is nothing distribution-specific in it.
+If the machine also has ROS 1 sourced in `.bashrc`, build and run from a
+shell where only ROS 2 is sourced — `colcon` bakes whatever it finds in the
+environment into `install/setup.bash`.
+
+## The kernel patch
+
+Stock `uvcvideo` derives the minimum of the speed controls from UVC `GET_MIN`,
+which is the *slowest* speed the camera supports (1), and reports the range as
+`[-1, 160]`. Every negative — reverse-direction — request is then clamped to
+-1: "pan left at 40 deg/s" arrives at the camera as "pan left at 1 deg/s".
+The fix (report and clamp to `-max`) was merged upstream in January 2026,
+tested on an OBSBOT Tiny 2, but no Ubuntu kernel ships it yet.
+
+The driver checks for it at start (`has_velocity`) and refuses to run on an
+unpatched kernel rather than crawl in one direction.
+
+[kernel/](kernel/) holds the patch and an installer for the NUC, whose
+`uvcvideo` is already a DKMS module (Intel RealSense ships one). It registers
+the patch with that package and rebuilds:
+
+```bash
+sudo bash kernel/install-nuc-uvcvideo-patch.sh
+sudo modprobe -r uvcvideo && sudo modprobe uvcvideo     # with no camera client running
+v4l2-ctl -d /dev/video0 --list-ctrls | grep speed        # expect min=-160 / min=-120
+```
+
+`--remove` reverts it. Another machine with a stock `uvcvideo` needs the same
+28-line change built as its own DKMS module; the patch applies to any 5.x/6.x
+`uvc_ctrl.c` with trivial offsets.
 
 ## Run
 
@@ -152,7 +199,8 @@ zero control errors while panning.
 Running the GCS on a *different machine* from the camera? Set `image_topic` in
 [config/gcs.yaml](src/obsbot_gcs/config/gcs.yaml) and it subscribes to a
 `sensor_msgs/Image` instead. You will need a camera publisher on the robot
-(`ros-humble-v4l2-camera`) — it is not installed here.
+(`teleop.launch.py camera:=true` starts `v4l2_camera` and tells the driver
+to rely on it).
 
 If clicks consistently overshoot the target, lower `hfov_deg`.
 
@@ -161,9 +209,10 @@ If clicks consistently overshoot the target, lower `hfov_deg`.
 | Name | Type | Direction |
 | --- | --- | --- |
 | `/obsbot/cmd_ptz` | `geometry_msgs/Twist` | in — normalised rate, each field −1..1 |
-| `/obsbot/goto_ptz` | `geometry_msgs/Vector3` | in — absolute pose, `NaN` skips an axis |
-| `/obsbot/ptz_state` | `sensor_msgs/JointState` | out — `pan`/`tilt` in rad, `zoom` 0..1 |
+| `/obsbot/goto_ptz` | `geometry_msgs/Vector3` | in — absolute pose, `NaN` skips an axis; the stick cancels it |
+| `/obsbot/ptz_state` | `sensor_msgs/JointState` | out — **measured** `pan`/`tilt` in rad, commanded rate in `velocity`, `zoom` 0..1 |
 | `/obsbot/home` | `std_srvs/Trigger` | service — recentre to (0, 0), zoom wide |
+| `/obsbot/release_stream` | `std_srvs/Trigger` | service — drop the keepalive stream so the caller can capture |
 
 `cmd_ptz` field mapping follows REP-103: `angular.z` = pan (+ = left),
 `angular.y` = tilt (+ = up), `linear.x` = zoom (+ = in).
@@ -209,7 +258,8 @@ will fight the GCS mouse wheel. Move `zoom_in_button` if that bites.
 
 Zoom spans 1x to 4x, measured: register 25 → 1.75x, 50 → 2.50x, 75 → 3.25x,
 100 → 4.03x. Exactly linear, so `max_zoom_rate` in fraction-per-second is also
-magnification-per-second times three.
+magnification-per-second times three. Zoom, like pan and tilt, only responds
+while the camera is streaming.
 
 ### Axis signs
 
@@ -225,54 +275,19 @@ numbers (0-based, as printed) and button numbers (add 1), and edit
 way to check a mapping: the dot should track your hand, and it lists exactly
 the buttons that are bound.
 
-### Why the camera used to keep moving after you let go
+### Who streams
 
-The driver integrates a rate into a target angle open-loop, and the camera
-reports no true position to correct against. So whenever the commanded rate
-exceeded what the gimbal could actually follow, the target ran ahead and the
-difference became a debt — which the camera paid off *after* the stick had
-already stopped.
+Only one process can stream from a V4L2 device, and velocity commands only
+work while one does. The driver's `stream` parameter says who:
 
-There is a second, sharper version of the same mistake: `_push` compared the
-raw arcsecond target to decide whether to write. Pan quantises to one degree,
-so a target creeping by 0.02° a tick produced a different number every time
-while meaning the identical command, and the driver streamed ~50 redundant
-control transfers a second into a camera that then worked through the backlog
-late. It now compares the value the device will actually store.
+| `stream` | behaviour |
+| --- | --- |
+| `auto` (default) | the driver runs a small 640×360 keepalive capture of its own unless something else already streams. When the GCS opens the camera it calls `release_stream`, the driver drops its capture for 5 s, and the GCS takes over. When the GCS exits, the driver notices within a second and resumes |
+| `always` | the driver streams unconditionally — a headless robot where nothing will ever capture |
+| `never` | something else must (`teleop.launch.py camera:=true` sets this for the `v4l2_camera` node); the driver only checks, and holds still while nobody streams |
 
-The structural fix is `tracking_rate` + `lead_limit`. The driver keeps an
-estimate of where the camera really is — it chases the target at
-`tracking_rate` — and never lets the target get more than `lead_limit` ahead
-of it. Overrun is then bounded by `lead_limit / tracking_rate` no matter what
-is commanded.
-
-Measured, full deflection held for five seconds:
-
-| `tracking_rate` | distance panned | coast after release |
-| --- | --- | --- |
-| 25 | 185 px | 1.84 s |
-| **18** | **542 px** | **0.17 s** |
-| 12 | 461 px | 0.16 s |
-
-Note the first row: overdriving made the camera travel *a third* as far,
-because the gimbal spent the pan thrashing between setpoints it could never
-reach. Faster commands were literally slower. With 18, releasing the stick
-stops the picture in ~0.15 s whether you panned for one second or five, and a
-`goto` still runs as one fast 64 deg/s move.
-
-### Why slow pans stutter
-
-Two hardware facts combine badly. Pan/tilt setpoints **quantise to 1 degree**
-(V4L2 rounds 0.5° to 1°), and the gimbal always slews at **~52 deg/s**
-regardless of what `move_speed` is set to — measured, it makes no difference
-at 1 or at 160. So a commanded 5 deg/s is physically executed as "dart one
-degree in 19 ms, wait 180 ms". Smooth slow motion is not available on this
-camera.
-
-`min_pan_rate` / `min_tilt_rate` are the response: the smallest deflection
-past the deadzone already commands ~12 deg/s, instead of pretending the range
-below it works. Lower them if you want finer framing and can accept the
-stepping.
+While the camera is not confirmed streaming the driver commands nothing but
+zero, so a stream hand-off can never leave it running.
 
 ## Tuning
 
@@ -280,23 +295,27 @@ Start in [config/ptz.yaml](src/obsbot_ptz/config/ptz.yaml):
 
 | Parameter | Effect |
 | --- | --- |
-| `tracking_rate` | how fast the gimbal can follow a *stream* of setpoints. The single most important number here — see below |
-| `lead_limit` | how far the target may run ahead of the camera, in degrees |
-| `max_pan_rate`, `max_tilt_rate` | deg/s at full stick. Pointless above `tracking_rate` |
-| `pan_accel`, `tilt_accel` | deg/s² ramp; lower is smoother, `0.0` is instant and jerky |
-| `move_speed_pan`, `move_speed_tilt` | gimbal chase speed: high = crisp, low = smooth but laggy |
-| `pan_min`/`pan_max`, `tilt_min`/`tilt_max` | soft limits in degrees; `.nan` uses the hardware limit |
+| `max_pan_rate`, `max_tilt_rate` | deg/s at full stick. Hardware maximum 160 / 120; above ~80 the picture is a blur |
+| `goto_rate` | cap for click-to-point, presets and home |
+| `pan_accel`, `tilt_accel` | deg/s² ramp; `0.0` (default) passes the stick straight through |
+| `pan_min`/`pan_max`, `tilt_min`/`tilt_max` | soft limits in degrees, enforced against the measured position; `.nan` uses the hardware limit |
 | `cmd_timeout` | watchdog window |
+| `stream` | see above |
 
 Joystick feel lives in [config/joystick.yaml](src/obsbot_ptz/config/joystick.yaml)
-— `deadzone`, `expo` (0 = linear, 1 = heavily curved), and `throttle_min_scale`.
+— `deadzone` and `expo` (0 = linear, 1 = heavily curved; the gimbal is smooth
+down to 1 deg/s, so a higher expo buys real precision near centre).
 
 ## Layout
 
 ```
+kernel/
+  uvcvideo-relative-ptz-speed-5.15.patch   the uvcvideo fix
+  install-nuc-uvcvideo-patch.sh            registers it with the NUC's DKMS uvcvideo
+
 src/obsbot_ptz/
-  obsbot_ptz/v4l2_ptz.py         ctypes V4L2 layer — no dependencies
-  obsbot_ptz/ptz_node.py         driver: rate → integrator → absolute setpoints
+  obsbot_ptz/v4l2_ptz.py         ctypes V4L2 layer: controls, velocity, keepalive stream
+  obsbot_ptz/ptz_node.py         driver: stick → velocity, closed-loop goto, stop verification
   obsbot_ptz/joy_to_ptz_node.py  joystick → cmd_ptz
   obsbot_ptz/probe.py            `ros2 run obsbot_ptz probe`
   config/ptz.yaml, config/joystick.yaml
@@ -338,45 +357,43 @@ start of every zoom-out. `_push` now writes zoom only when the register value
 changes. If you raise `max_zoom_rate` far above 0.15 you can bring it back.
 
 **Zoom does nothing at all.** Zoom is only applied while the camera is
-streaming. With no capture client running, writes to `Zoom, Absolute` are
-accepted by the ioctl and silently discarded — the register even reads back 0.
-Start the GCS (or any capture) and it works.
+streaming, the same as pan and tilt. With `stream: auto` the driver's
+keepalive covers it; with `stream: never`, start the capture node.
 
 **A button fires twice, or the camera will not move at all.** An old launch is
 still running. `ros2 node list` showing two `/obsbot/obsbot_ptz` or
-`/obsbot/joy_to_ptz` entries means two nodes are both driving the camera; the
-leftover one also keeps `/dev/video2` open, so the GCS then reports
-"cannot open /dev/video2 for capture".
+`/obsbot/joy_to_ptz` entries means two nodes are both driving the camera.
+`joy_node` in particular sometimes survives a Ctrl-C; `pkill joy_node`.
 
-### Verifying motion — do not trust the position readback
+**`kernel reports the speed controls as [-1, max]`** at start-up. The
+uvcvideo patch is not installed or not loaded — see
+[The kernel patch](#the-kernel-patch).
 
-`ptz_state` and the V4L2 position controls report the *commanded* pose, not a
-measured one (`uvcvideo` caches it; a read never reaches the camera). A test
-that only checks those numbers will happily "pass" against a gimbal that never
-moved.
+**The stick does nothing, no errors.** The camera is not streaming, so it
+ignores velocity. With `stream: auto` that means the keepalive could not
+start — another process holds the device without using it (`fuser -v
+/dev/video*`). With `stream: never`, start the capture node.
 
-To prove real motion, measure the image. `phaseCorrelate` between consecutive
-frames gives the pixel shift, whose sign is the opposite of the camera's
-motion:
+**`gimbal still moving after stop; re-sending stop`** in the log. The
+camera dropped a stop, usually around a stream hand-off; the driver caught it
+and re-sent. Once in a while is expected. Constantly means something else is
+writing to the camera — a second driver instance, most likely.
+
+### Verifying motion
+
+`ptz_state` is the camera's own position report, 1-degree resolution, about
+100 ms behind the picture. For anything finer, measure the image:
+`phaseCorrelate` between consecutive frames gives the pixel shift, whose sign
+is the opposite of the camera's motion.
 
 ```python
 (dx, dy), _ = cv2.phaseCorrelate(prev_gray_f64, cur_gray_f64)
 # dx > 0: scene slid right, so the camera panned LEFT
 ```
 
-Measured this way, with the stick full left: settled −0.5 px, trigger not held
-−0.3 px, trigger held +93.0 px.
+## What is past the standard interface
 
-## The ceiling of the V4L2 approach, and what is past it
-
-Everything above is as smooth as the standard UVC interface can be made. The
-two limits — 1-degree setpoints and a fixed ~52 deg/s slew — are properties of
-what `uvcvideo` exposes, not of the camera. There is no module parameter or
-quirk that unlocks them; the granularity comes from the device's own
-`GET_RES`, and V4L2 rounds to it before the value ever leaves the kernel.
-
-The camera does have a finer interface. It publishes a **vendor extension
-unit** that OBSBOT Center drives:
+The camera also publishes a vendor extension unit that OBSBOT Center drives:
 
 ```
 Extension Unit, bUnitID 2
@@ -384,25 +401,20 @@ guidExtensionCode {9a1e7291-6843-4683-6d92-39bc7906ee49}
 bNumControls 19
 ```
 
-It is reachable from userspace without root via `UVCIOC_CTRL_QUERY`. Probing it
-read-only shows 22 selectors, 60 bytes each, all GET|SET — and selector 8
-returns the ASCII string `Tiny 2 Lite StreamCamera`, which confirms it is the
-real vendor channel rather than padding.
-
-That is where smooth velocity control almost certainly lives, along with the AI
-tracking modes. What is missing is the command encoding: which selector and
-which bytes mean "pan at this rate". Guessing is not an option — writing
-invented bytes to a vendor unit is how a camera ends up in a state no public
-tool can clear. Decoding it means either a USB capture of OBSBOT Center driving
-the gimbal, or lifting the layout from a project that has already done that
-work: `lxman/obsbot-mcp`, `cgevans/tiny2`, `taxfromdk/obsbot_tiny_reversing`.
-
-Until then, `min_pan_rate` is the honest workaround rather than a fix.
+It is reachable from userspace via `UVCIOC_CTRL_QUERY` (selector 8 returns the
+ASCII string `Tiny 2 Lite StreamCamera`), and that is where the AI tracking
+modes live. The command encoding is unknown; writing invented bytes to a
+vendor unit is how a camera ends up in a state no public tool can clear.
+`lxman/obsbot-mcp`, `cgevans/tiny2` and `taxfromdk/obsbot_tiny_reversing`
+have done some of that work if you need it. Pan, tilt and zoom do not — the
+standard interface covers them completely.
 
 ## Notes
 
 - Control and video capture use independent file descriptors, so the gimbal
-  stays driveable while the camera streams.
+  stays driveable while the camera streams — and must stream for it to move.
+- The Tiny 2 Lite reports pan ±130° but physically travels to about ±148°
+  before its own end stop.
 - Your user needs access to the camera node (`video` group, or the seat ACL
   that `logind` already grants on a desktop login).
 - Motorised tracking, face-follow and the other AI modes live behind the
