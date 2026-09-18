@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import QWidget
 
 from . import theme
 
+_HAS_BGR888 = hasattr(QImage, "Format_BGR888")
+
 
 class VideoHud(QWidget):
     """Letterboxed live view plus PTZ overlay. Click to point the camera."""
@@ -106,9 +108,16 @@ class VideoHud(QWidget):
             return self.rect().adjusted(8, 8, -8, -8)
 
         # QImage does not copy, so the buffer must outlive the paint.
-        self._buffer = np.ascontiguousarray(self.frame)
+        # Format_BGR888 arrived in Qt 5.14; on older Qt (Ubuntu 20.04 ships
+        # 5.12) swap the channels once and hand it RGB888 instead.
+        if _HAS_BGR888:
+            self._buffer = np.ascontiguousarray(self.frame)
+            fmt = QImage.Format_BGR888
+        else:
+            self._buffer = np.ascontiguousarray(self.frame[..., ::-1])
+            fmt = QImage.Format_RGB888
         h, w, _ = self._buffer.shape
-        image = QImage(self._buffer.data, w, h, 3 * w, QImage.Format_BGR888)
+        image = QImage(self._buffer.data, w, h, 3 * w, fmt)
 
         scale = min(self.width() / w, self.height() / h)
         vw, vh = int(w * scale), int(h * scale)
